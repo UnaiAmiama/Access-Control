@@ -1,0 +1,42 @@
+#include <esp_now.h>
+#include <WiFi.h>
+
+// Estructura para recibir datos
+typedef struct struct_message {
+  char uid[20]; // UID de la tarjeta
+} struct_message;
+
+struct_message datosRecibidos;
+
+// Callback para recibir datos
+void recibirCallback(const esp_now_recv_info *info, const uint8_t *data, int len) {
+  // Copiar los datos recibidos a la estructura
+  memcpy(&datosRecibidos, data, sizeof(datosRecibidos));
+  
+  // Imprimir solo el UID recibido
+  Serial.println(datosRecibidos.uid);
+
+  // Reenviar el UID al Arduino por Serial1
+  Serial1.println(datosRecibidos.uid);
+}
+
+void setup() {
+  Serial.begin(115200); // Para depuración
+  Serial1.begin(115200);  // Comunicación con el Arduino
+
+  // Configurar WiFi en modo estación
+  WiFi.mode(WIFI_STA);
+
+  // Inicializar ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error inicializando ESP-NOW");
+    return;
+  }
+
+  // Registrar el nuevo callback
+  esp_now_register_recv_cb(recibirCallback);
+}
+
+void loop() {
+  // El receptor solo escucha, no es necesario implementar lógica en el loop
+}
