@@ -1,0 +1,54 @@
+#include <esp_now.h>
+#include <WiFi.h>
+
+// Dirección MAC del receptor (reemplazar con la dirección del ESP32 receptor)
+uint8_t receptorDireccion[] = {0x08, 0xD1, 0xF9, 0xAA, 0x28, 0x00};
+
+// Estructura para enviar datos
+typedef struct struct_message {
+  char uid[20];
+} struct_message;
+
+struct_message datos;
+
+void enviarCallback(const uint8_t *macAddr, esp_now_send_status_t status) {
+  // Solo mostramos el estado del envío
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Éxito" : "Fallo");
+}
+
+void setup() {
+  Serial.begin(115200); // Comunicación serial con el Arduino
+  WiFi.mode(WIFI_STA);
+
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error inicializando ESP-NOW");
+    return;
+  }
+
+  esp_now_register_send_cb(enviarCallback);
+
+  esp_now_peer_info_t peerInfo;
+  memcpy(peerInfo.peer_addr, receptorDireccion, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Error al agregar receptor");
+    return;
+  }
+}
+
+void loop() {
+  if (Serial.available() > 0) {
+    String uidLeida = Serial.readStringUntil('\n');
+    uidLeida.trim();
+    uidLeida.toCharArray(datos.uid, 20);
+
+    esp_err_t resultado = esp_now_send(receptorDireccion, (uint8_t *)&datos, sizeof(datos));
+    // Solo mostramos si el envío fue exitoso o no
+    if (resultado == ESP_OK) {
+      Serial.println("UID enviado correctamente");
+    } else {
+      Serial.println("Error al enviar el UID");
+    }
+  }
+}
