@@ -1,0 +1,182 @@
+#include <SPI.h>
+#include <MFRC522.h>
+#include <EEPROM.h>
+#include <Servo.h>
+
+#define BUZZER        8
+#define LV            2
+#define LR            4
+#define RST_PIN       9
+#define SS_PIN        10
+#define SERVO_PIN     6
+#define EEPROM_SIZE   100
+#define MAX_UIDS      10
+#define UID_MAX_LEN   12
+
+MFRC522 mfrc522(SS_PIN, RST_PIN);
+Servo myServo;
+
+String allowedUIDs[MAX_UIDS];
+int uidCount = 0;
+
+void setup() {
+  pinMode(LV, OUTPUT);
+  pinMode(LR, OUTPUT);
+  digitalWrite(LV, LOW);
+  digitalWrite(LR, LOW);
+  Serial.begin(115200);
+  SPI.begin();
+  mfrc522.PCD_Init();
+  myServo.attach(SERVO_PIN);
+  myServo.write(0);
+
+  loadUIDsFromEEPROM();
+
+  Serial.println("\n======= LISTA DE UIDs PERMITIDAS =======");
+  if (uidCount == 0) {
+    Serial.println("No hay UID's almacenadas.");
+  } else {
+    for (int i = 0; i < uidCount; i++) {
+      Serial.print(i + 1);
+      Serial.print(". ");
+      Serial.println(allowedUIDs[i]);
+    }
+  }
+  Serial.println("========================================\n");
+}
+
+void loop() {
+  if (Serial.available()) {
+    String receivedUID = Serial.readStringUntil('\n');
+    receivedUID.trim();
+    receivedUID.toLowerCase();
+    if (receivedUID.length() > 0) {
+      Serial.print("Recibido del ESP32: ");
+      Serial.println(receivedUID);
+      toggleUID(receivedUID);
+    }
+  }
+
+  if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
+    return;
+  }
+
+  String currentUID = uidToString(mfrc522.uid.uidByte, mfrc522.uid.size);
+  currentUID.toLowerCase();
+  Serial.print("UID de la tarjeta: ");
+  Serial.println(currentUID);
+
+  if (isUIDAllowed(currentUID)) {
+    Serial.println("Acceso permitido.");
+    accesopermitido();
+  } else {
+    Serial.println("Acceso denegado.");
+    accesodenegado();
+  }
+
+  delay(500);
+  digitalWrite(LV, LOW);
+  digitalWrite(LR, LOW);
+}
+
+String uidToString(byte *buffer, byte bufferSize) {
+  String uidString = "";
+  for (byte i = 0; i < bufferSize; i++) {
+    uidString += String(buffer[i], HEX);
+  }
+  uidString.toLowerCase();
+  return uidString;
+}
+
+void toggleUID(String uid) {
+  uid.toLowerCase();
+  for (int i = 0; i < uidCount; i++) {
+    if (allowedUIDs[i] == uid) {
+      removeUID(i);
+      return;
+    }
+  }
+  addUID(uid);
+}
+
+void addUID(String uid) {
+  uid.toLowerCase();
+  if (uidCount < MAX_UIDS) {
+    allowedUIDs[uidCount] = uid;
+    uidCount++;
+    saveUIDsToEEPROM();
+    Serial.println("UID guardado en EEPROM");
+  } else {
+    Serial.println("Lista de UIDs llena.");
+  }
+}
+
+void removeUID(int index) {
+  for (int i = index; i < uidCount - 1; i++) {
+    allowedUIDs[i] = allowedUIDs[i + 1];
+  }
+  uidCount--;
+  saveUIDsToEEPROM();
+  Serial.println("UID eliminado de EEPROM");
+}
+
+bool isUIDAllowed(String uid) {
+  uid.toLowerCase();
+  for (int i = 0; i < uidCount; i++) {
+    if (allowedUIDs[i] == uid) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void saveUIDsToEEPROM() {
+  EEPROM.put(0, uidCount);
+  int addr = sizeof(uidCount);
+
+  for (int i = 0; i < uidCount; i++) {
+    int len = allowedUIDs[i].length();
+    EEPROM.write(addr++, len);
+    for (int j = 0; j < len; j++) {
+      EEPROM.write(addr++, allowedUIDs[i][j]);
+    }
+  }
+}
+
+void loadUIDsFromEEPROM() {
+  EEPROM.get(0, uidCount);
+  if (uidCount < 0 || uidCount > MAX_UIDS) {
+    uidCount = 0;
+    return;
+  }
+
+  int addr = sizeof(uidCount);
+  for (int i = 0; i < uidCount; i++) {
+    int len = EEPROM.read(addr++);
+    char uidBuffer[UID_MAX_LEN] = "";
+    for (int j = 0; j < len; j++) {
+      uidBuffer[j] = EEPROM.read(addr++);
+    }
+    uidBuffer[len] = '\0';
+    allowedUIDs[i] = String(uidBuffer);
+    allowedUIDs[i].toLowerCase();
+  }
+}
+
+void accesodenegado() {
+  tone(BUZZER, 500, 500);
+  digitalWrite(LR, HIGH);
+  digitalWrite(LV, LOW);
+  delay(1500);
+  digitalWrite(LR, LOW);
+}
+
+void accesopermitido() {
+  tone(BUZZER, 1000, 500);
+  digitalWrite(LV, HIGH);
+  digitalWrite(LR, LOW);
+  myServo.write(90);
+  delay(1500);
+  myServo.write(0);
+  digitalWrite(LV, LOW);
+}
