@@ -1,182 +1,169 @@
+//You can edit o delete the leds pins but do not change SS_PIN and RST_PIN
+
 #include <SPI.h>
 #include <MFRC522.h>
 #include <EEPROM.h>
-#include <Servo.h>
+#include <Servo.h>  // Biblioteca para el servo
 
-#define BUZZER        8
-#define LV            2
-#define LR            4
-#define RST_PIN       9
-#define SS_PIN        10
-#define SERVO_PIN     6
-#define EEPROM_SIZE   100
-#define MAX_UIDS      10
-#define UID_MAX_LEN   12
+#define RST_PIN 9
+#define SS_PIN 10
+
+#define LV 2  // LED para indicar el registro de una tarjeta
+#define LR 4  // LED para indicar la eliminación de una tarjeta
+#define BUZZER_PIN 8 // Pin del buzzer
+#define SERVO_PIN 7  // Pin del servo
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
-Servo myServo;
 
-String allowedUIDs[MAX_UIDS];
-int uidCount = 0;
+#define MAX_REGISTROS 10
+#define EEPROM_START_ADDRESS 0 // Dirección de inicio en la EEPROM
+
+String registros[MAX_REGISTROS];
+int numRegistros = 0;
+
+Servo servo;  // Objeto Servo
+
+bool esperandoUIDESP32 = false;  // Flag para saber si estamos esperando UID del ESP32
 
 void setup() {
-  pinMode(LV, OUTPUT);
-  pinMode(LR, OUTPUT);
-  digitalWrite(LV, LOW);
-  digitalWrite(LR, LOW);
   Serial.begin(115200);
   SPI.begin();
-  mfrc522.PCD_Init();
-  myServo.attach(SERVO_PIN);
-  myServo.write(0);
+  mfrc522.PCD_Init(); // Inicialización del MFRC522 desde el código de prueba
 
-  loadUIDsFromEEPROM();
+  pinMode(LV, OUTPUT);
+  pinMode(LR, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT); // Definir el buzzer como salida
+  digitalWrite(LV, LOW);
+  digitalWrite(LR, LOW);
+  digitalWrite(BUZZER_PIN, LOW); // Asegurarse de que el buzzer esté apagado inicialmente
 
-  Serial.println("\n======= LISTA DE UIDs PERMITIDAS =======");
-  if (uidCount == 0) {
-    Serial.println("No hay UID's almacenadas.");
+  // Inicialización del servo
+  servo.attach(SERVO_PIN); // Conectar el servo al pin definido
+  servo.write(0); // Colocar el servo en la posición inicial (cerrado en 0º)
+
+  // Cargar datos desde la EEPROM
+  loadFromEEPROM();
+
+  // Mostrar tarjetas registradas en el Serial
+  Serial.println("Tarjetas permitidas:");
+  if (numRegistros == 0) {
+    Serial.println("No hay tarjetas registradas.");
   } else {
-    for (int i = 0; i < uidCount; i++) {
-      Serial.print(i + 1);
-      Serial.print(". ");
-      Serial.println(allowedUIDs[i]);
+    for (int i = 0; i < numRegistros; i++) {
+      Serial.println(registros[i]); // Mostrar las UID de las tarjetas permitidas
     }
   }
-  Serial.println("========================================\n");
 }
 
 void loop() {
-  if (Serial.available()) {
-    String receivedUID = Serial.readStringUntil('\n');
-    receivedUID.trim();
-    receivedUID.toLowerCase();
-    if (receivedUID.length() > 0) {
-      Serial.print("Recibido del ESP32: ");
-      Serial.println(receivedUID);
-      toggleUID(receivedUID);
+  // Verificar si estamos esperando una UID del ESP32
+  if (Serial.available() && !esperandoUIDESP32) {
+    String uidLeida = Serial.readStringUntil('\n');
+    uidLeida.trim(); // Limpiar los saltos de línea u otros caracteres no deseados
+    uidLeida.toUpperCase();
+
+    // Verificar si la tarjeta ya está registrada
+    bool tarjetaRegistrada = false;
+    int indice = -1;
+    for (int i = 0; i < numRegistros; i++) {
+      if (registros[i] == uidLeida) {
+        tarjetaRegistrada = true;
+        indice = i;
+        break;
+      }
+    }
+
+    // Si la tarjeta está registrada, eliminarla
+    if (tarjetaRegistrada) {
+      // Eliminar la tarjeta de la lista de registros
+      for (int i = indice; i < numRegistros - 1; i++) {
+        registros[i] = registros[i + 1];
+      }
+      numRegistros--;
+      saveToEEPROM();  // Guardar los cambios en la EEPROM
+      Serial.println("Tarjeta eliminada");
+    } 
+    // Si no está registrada, agregarla
+    else if (numRegistros < MAX_REGISTROS) {
+      registros[numRegistros] = uidLeida;
+      numRegistros++;
+      saveToEEPROM();  // Guardar los cambios en la EEPROM
+      Serial.println("Tarjeta agregada");
+    }
+    // Si ya están las 10 tarjetas registradas
+    else {
+      Serial.println("Número máximo de tarjetas registradas alcanzado");
     }
   }
 
-  if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
-    return;
-  }
+  // Comprobar si se escanea una tarjeta con el MFRC522
+  if (!esperandoUIDESP32 && mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+    String uidLeida = "";
 
-  String currentUID = uidToString(mfrc522.uid.uidByte, mfrc522.uid.size);
-  currentUID.toLowerCase();
-  Serial.print("UID de la tarjeta: ");
-  Serial.println(currentUID);
+    for (byte i = 0; i < mfrc522.uid.size; i++) {
+      uidLeida += String(mfrc522.uid.uidByte[i], HEX);
+    }
+    uidLeida.toUpperCase();
 
-  if (isUIDAllowed(currentUID)) {
-    Serial.println("Acceso permitido.");
-    accesopermitido();
-  } else {
-    Serial.println("Acceso denegado.");
-    accesodenegado();
-  }
+    // Verificar si la tarjeta está registrada
+    bool tarjetaRegistrada = false;
+    for (int i = 0; i < numRegistros; i++) {
+      if (registros[i] == uidLeida) {
+        tarjetaRegistrada = true;
+        break;
+      }
+    }
 
-  delay(500);
-  digitalWrite(LV, LOW);
-  digitalWrite(LR, LOW);
-}
-
-String uidToString(byte *buffer, byte bufferSize) {
-  String uidString = "";
-  for (byte i = 0; i < bufferSize; i++) {
-    uidString += String(buffer[i], HEX);
-  }
-  uidString.toLowerCase();
-  return uidString;
-}
-
-void toggleUID(String uid) {
-  uid.toLowerCase();
-  for (int i = 0; i < uidCount; i++) {
-    if (allowedUIDs[i] == uid) {
-      removeUID(i);
-      return;
+    // Si la tarjeta está registrada
+    if (tarjetaRegistrada) {
+      digitalWrite(LV, HIGH); // Tarjeta permitida, encender LED de registro
+      tone(BUZZER_PIN, 1000, 300); // Sonido corto del buzzer (300ms)
+      servo.write(180); // Abrir la puerta (mover el servo a 180º)
+      delay(300); // Espera reducida (300ms)
+      servo.write(0); // Volver a 0º (cerrar la puerta)
+      delay(300); // Espera reducida (300ms)
+      digitalWrite(LV, LOW);
+      Serial.println("Acceso permitido");
+    } else {
+      digitalWrite(LR, HIGH); // Tarjeta no permitida, encender LED de eliminación
+      tone(BUZZER_PIN, 500, 700); // Sonido largo del buzzer (700ms)
+      servo.write(0); // Cerrar la puerta (mover el servo a 0º)
+      delay(300); // Espera reducida (300ms)
+      digitalWrite(LR, LOW);
+      Serial.println("Acceso denegado");
     }
   }
-  addUID(uid);
+
+  delay(100); // Tiempo de espera mínimo para evitar sobrecargar la CPU
 }
 
-void addUID(String uid) {
-  uid.toLowerCase();
-  if (uidCount < MAX_UIDS) {
-    allowedUIDs[uidCount] = uid;
-    uidCount++;
-    saveUIDsToEEPROM();
-    Serial.println("UID guardado en EEPROM");
-  } else {
-    Serial.println("Lista de UIDs llena.");
-  }
-}
+void saveToEEPROM() {
+  EEPROM.write(EEPROM_START_ADDRESS, numRegistros); // Guarda la cantidad de registros
 
-void removeUID(int index) {
-  for (int i = index; i < uidCount - 1; i++) {
-    allowedUIDs[i] = allowedUIDs[i + 1];
-  }
-  uidCount--;
-  saveUIDsToEEPROM();
-  Serial.println("UID eliminado de EEPROM");
-}
-
-bool isUIDAllowed(String uid) {
-  uid.toLowerCase();
-  for (int i = 0; i < uidCount; i++) {
-    if (allowedUIDs[i] == uid) {
-      return true;
+  for (int i = 0; i < numRegistros; i++) {
+    int address = EEPROM_START_ADDRESS + 1 + i * 17; // Calcula la dirección para cada UID (16 bytes + 1 byte para el largo del string)
+    EEPROM.write(address, registros[i].length()); // Guarda el largo del string
+    for (int j = 0; j < registros[i].length(); j++) {
+      EEPROM.write(address + 1 + j, registros[i][j]); // Guarda cada caracter del string
     }
   }
-  return false;
 }
 
-void saveUIDsToEEPROM() {
-  EEPROM.put(0, uidCount);
-  int addr = sizeof(uidCount);
+void loadFromEEPROM() {
+  numRegistros = EEPROM.read(EEPROM_START_ADDRESS); // Lee la cantidad de registros
 
-  for (int i = 0; i < uidCount; i++) {
-    int len = allowedUIDs[i].length();
-    EEPROM.write(addr++, len);
+  if (numRegistros > MAX_REGISTROS) {
+    numRegistros = 0; // Evita leer basura si el valor es incorrecto
+  }
+
+  for (int i = 0; i < numRegistros; i++) {
+    int address = EEPROM_START_ADDRESS + 1 + i * 17;
+    int len = EEPROM.read(address); // Lee el largo del string
+    if (len > 16) len = 16; // Limita el largo para evitar problemas.
+
+    registros[i] = "";
     for (int j = 0; j < len; j++) {
-      EEPROM.write(addr++, allowedUIDs[i][j]);
+      registros[i] += char(EEPROM.read(address + 1 + j)); // Lee cada caracter del string
     }
   }
-}
-
-void loadUIDsFromEEPROM() {
-  EEPROM.get(0, uidCount);
-  if (uidCount < 0 || uidCount > MAX_UIDS) {
-    uidCount = 0;
-    return;
-  }
-
-  int addr = sizeof(uidCount);
-  for (int i = 0; i < uidCount; i++) {
-    int len = EEPROM.read(addr++);
-    char uidBuffer[UID_MAX_LEN] = "";
-    for (int j = 0; j < len; j++) {
-      uidBuffer[j] = EEPROM.read(addr++);
-    }
-    uidBuffer[len] = '\0';
-    allowedUIDs[i] = String(uidBuffer);
-    allowedUIDs[i].toLowerCase();
-  }
-}
-
-void accesodenegado() {
-  tone(BUZZER, 500, 500);
-  digitalWrite(LR, HIGH);
-  digitalWrite(LV, LOW);
-  delay(1500);
-  digitalWrite(LR, LOW);
-}
-
-void accesopermitido() {
-  tone(BUZZER, 1000, 500);
-  digitalWrite(LV, HIGH);
-  digitalWrite(LR, LOW);
-  myServo.write(90);
-  delay(1500);
-  myServo.write(0);
-  digitalWrite(LV, LOW);
 }
